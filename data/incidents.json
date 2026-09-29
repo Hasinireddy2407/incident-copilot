@@ -1,0 +1,387 @@
+[
+  {
+    "id": "INC-101",
+    "service": "checkout-service",
+    "severity": "sev1",
+    "resolved_at": "2026-02-03T03:41:00Z",
+    "alert": "checkout-service p99 latency > 4s for 5m",
+    "symptoms": "Latency climbing on POST /checkout and DB connection wait time is high. Error logs show 'HikariPool-1 - Connection is not available, request timed out after 30000ms' on checkout-service-6c8f9.",
+    "actions": [
+      {
+        "action": "Restarted checkout pods",
+        "outcome": "harmful",
+        "note": "Latency got worse; the reconnect storm exhausted the pool again."
+      },
+      {
+        "action": "Scaled checkout to 12 replicas",
+        "outcome": "harmful",
+        "note": "More replicas opened more DB connections and hit max_connections."
+      },
+      {
+        "action": "Rolled back config deploy #4471",
+        "outcome": "worked",
+        "note": "Pool size had been reduced from 50 to 10."
+      }
+    ],
+    "root_cause": "Config deploy #4471 reduced the checkout-service DB connection pool size from 50 to 10.",
+    "resolution": "Rolled back deploy #4471, restoring the pool size to 50.",
+    "ttr_minutes": 82,
+    "family": "pool_exhaustion",
+    "split": "seed"
+  },
+  {
+    "id": "INC-102",
+    "service": "catalog-service",
+    "severity": "sev2",
+    "resolved_at": "2026-02-17T02:10:00Z",
+    "alert": "catalog-service read latency degraded, catalog-db CPU at 95%",
+    "symptoms": "Product pages load slowly after overnight Redis maintenance. Cache hit ratio dropped sharply and the slow query log on catalog-db is spiking. Logs show 'redis: master changed, connection reset'.",
+    "actions": [
+      {
+        "action": "Flushed the cache",
+        "outcome": "harmful",
+        "note": "A cold cache made the stampede worse and DB CPU stayed pinned."
+      },
+      {
+        "action": "Enabled request coalescing on hot product keys and warmed the cache gradually",
+        "outcome": "worked",
+        "note": "DB load dropped within ten minutes."
+      }
+    ],
+    "root_cause": "A Redis failover emptied the catalog cache and a thundering herd of misses overloaded catalog-db.",
+    "resolution": "Enabled request coalescing and warmed hot keys gradually while rate-limiting DB traffic.",
+    "ttr_minutes": 52,
+    "family": "cache_stampede",
+    "split": "seed"
+  },
+  {
+    "id": "INC-103",
+    "service": "auth-service",
+    "severity": "sev1",
+    "resolved_at": "2026-03-09T00:37:00Z",
+    "alert": "auth-service inbound TLS handshake failures spiking, login success rate 61%",
+    "symptoms": "Clients fail mutual TLS to auth-service. Logs show 'x509: certificate has expired or is not yet valid: current time 2026-03-09T00:31:12Z is after 2026-03-09T00:00:00Z'.",
+    "actions": [
+      {
+        "action": "Restarted auth-service",
+        "outcome": "failed",
+        "note": "No effect, the same expired cert was reloaded."
+      },
+      {
+        "action": "Renewed the mTLS certificate from the internal CA and reloaded it",
+        "outcome": "worked",
+        "note": "Handshakes recovered immediately."
+      }
+    ],
+    "root_cause": "The auth-service internal mTLS certificate expired and was not auto-renewed.",
+    "resolution": "Renewed the certificate and reloaded it on the affected services.",
+    "ttr_minutes": 36,
+    "family": "tls_expiry",
+    "split": "seed"
+  },
+  {
+    "id": "INC-105",
+    "service": "log-ingest",
+    "severity": "sev2",
+    "resolved_at": "2026-04-02T22:15:00Z",
+    "alert": "log-ingest write failures, /var/log volume at 100%",
+    "symptoms": "Writes are being rejected across ingest nodes. Logs show 'write failed: ENOSPC: No space left on device' and disk usage grew steadily over the past week.",
+    "actions": [
+      {
+        "action": "Scaled up log-ingest replicas",
+        "outcome": "failed",
+        "note": "New pods landed on the same full nodes and were evicted."
+      },
+      {
+        "action": "Purged old logs and fixed the logrotate config",
+        "outcome": "worked",
+        "note": "Volume dropped to 41% and stayed there."
+      }
+    ],
+    "root_cause": "Unrotated log files filled the log-ingest volume.",
+    "resolution": "Purged old logs and fixed the log rotation config.",
+    "ttr_minutes": 47,
+    "family": "disk_full",
+    "split": "seed"
+  },
+  {
+    "id": "INC-104",
+    "service": "orders-api",
+    "severity": "sev2",
+    "resolved_at": "2026-04-11T14:22:00Z",
+    "alert": "502 rate from api-gateway to orders-api above 8% for 10m",
+    "symptoms": "The gateway returns intermittent 502s while orders-api pods report healthy. orders-db logs show 'FATAL: remaining connection slots are reserved for non-replication superuser connections'.",
+    "actions": [
+      {
+        "action": "Restarted orders-api pods",
+        "outcome": "harmful",
+        "note": "Reconnect storm exhausted the pool again within two minutes."
+      },
+      {
+        "action": "Rolled back config deploy #5102",
+        "outcome": "worked",
+        "note": "The deploy had cut the pool size and idle timeout, causing connection churn."
+      }
+    ],
+    "root_cause": "Config deploy #5102 lowered the orders-api pool size and idle timeout so connection slots ran out.",
+    "resolution": "Rolled back deploy #5102.",
+    "ttr_minutes": 58,
+    "family": "pool_exhaustion",
+    "split": "seed"
+  },
+  {
+    "id": "INC-106",
+    "service": "search-api",
+    "severity": "sev2",
+    "resolved_at": "2026-05-05T16:33:00Z",
+    "alert": "cache miss ratio 0.94 on search-api, backend CPU saturated",
+    "symptoms": "Search responses are slow and the index backend is saturated. Redis sentinel recorded a primary switch 9 minutes earlier and the log shows 'redis: master changed, connection reset'.",
+    "actions": [
+      {
+        "action": "Restarted the cache tier",
+        "outcome": "harmful",
+        "note": "A second cold start let the DB fall over again."
+      },
+      {
+        "action": "Rate-limited DB traffic, enabled request coalescing and warmed hot keys",
+        "outcome": "worked",
+        "note": "Miss ratio recovered to 0.2 over 15 minutes."
+      }
+    ],
+    "root_cause": "A Redis failover left search-api with an empty cache and misses overwhelmed the backend.",
+    "resolution": "Rate-limited backend traffic and warmed hot keys gradually with coalescing on.",
+    "ttr_minutes": 44,
+    "family": "cache_stampede",
+    "split": "seed"
+  },
+  {
+    "id": "INC-107",
+    "service": "notifications-service",
+    "severity": "sev3",
+    "resolved_at": "2026-05-28T13:14:00Z",
+    "alert": "notifications-service upstream calls to mail relay failing, 100% errors for 15m",
+    "symptoms": "No emails or push messages are being sent. Logs show 'SSL handshake failed: tls: bad certificate' when connecting to the internal relay.",
+    "actions": [
+      {
+        "action": "Restarted notifications-service",
+        "outcome": "failed",
+        "note": "No effect, the same expired cert was reloaded."
+      },
+      {
+        "action": "Renewed the relay client certificate and reloaded it",
+        "outcome": "worked",
+        "note": "Queue drained within minutes."
+      }
+    ],
+    "root_cause": "The notifications-service client certificate for the internal relay expired.",
+    "resolution": "Renewed the certificate and reloaded it on notifications-service.",
+    "ttr_minutes": 27,
+    "family": "tls_expiry",
+    "split": "seed"
+  },
+  {
+    "id": "INC-108",
+    "service": "inventory-service",
+    "severity": "sev2",
+    "resolved_at": "2026-06-20T09:05:00Z",
+    "alert": "inventory-service DB timeouts in stock-check path, error budget burn 14x",
+    "symptoms": "Stock lookups time out and request threads are blocked. Logs show 'timeout acquiring connection from pool (inventory-service-7d9f, waited 30000ms)' starting right after the morning deploy.",
+    "actions": [
+      {
+        "action": "Scaled inventory-service to 10 replicas",
+        "outcome": "harmful",
+        "note": "Extra replicas opened more DB connections and hit max_connections."
+      },
+      {
+        "action": "Rolled back config deploy #5688",
+        "outcome": "worked",
+        "note": "Pool size had been set to 8 by a template change."
+      }
+    ],
+    "root_cause": "Config deploy #5688 shrank the inventory-service DB pool to 8 connections.",
+    "resolution": "Rolled back deploy #5688.",
+    "ttr_minutes": 41,
+    "family": "pool_exhaustion",
+    "split": "seed"
+  },
+  {
+    "id": "INC-109",
+    "service": "user-profile-service",
+    "severity": "sev1",
+    "resolved_at": "2026-07-08T11:57:00Z",
+    "alert": "user-profile-service origin load 6x baseline after Redis primary switchover",
+    "symptoms": "Profile reads are slow and the database is under heavy load. Cache metrics show almost no hits since the switchover and the slow query log is full of profile lookups.",
+    "actions": [
+      {
+        "action": "Flushed the cache",
+        "outcome": "harmful",
+        "note": "Made the cold cache problem worse."
+      },
+      {
+        "action": "Restarted the cache tier",
+        "outcome": "harmful",
+        "note": "Second cold start, the DB fell over again."
+      },
+      {
+        "action": "Enabled request coalescing and warmed hot profile keys gradually",
+        "outcome": "worked",
+        "note": "Load returned to normal after DB traffic was rate-limited."
+      }
+    ],
+    "root_cause": "A Redis switchover emptied the profile cache and a stampede of misses hit the database.",
+    "resolution": "Enabled request coalescing, rate-limited DB traffic and warmed hot keys gradually.",
+    "ttr_minutes": 74,
+    "family": "cache_stampede",
+    "split": "seed"
+  },
+  {
+    "id": "INC-110",
+    "service": "billing-service",
+    "severity": "sev2",
+    "resolved_at": "2026-07-22T18:40:00Z",
+    "alert": "billing-service invoice job failing, internal gRPC calls returning UNAVAILABLE",
+    "symptoms": "Calls from billing-service to the ledger fail with UNAVAILABLE. Logs show 'x509: certificate has expired or is not yet valid' for CN=ledger.internal.",
+    "actions": [
+      {
+        "action": "Restarted billing-service",
+        "outcome": "failed",
+        "note": "No effect, the expired cert was loaded again."
+      },
+      {
+        "action": "Renewed the ledger certificate and reloaded it on the affected services",
+        "outcome": "worked",
+        "note": "Invoice job resumed on next retry."
+      }
+    ],
+    "root_cause": "The internal mTLS certificate for ledger.internal expired and auto-renewal had not run.",
+    "resolution": "Renewed the certificate and reloaded it on billing-service and ledger.",
+    "ttr_minutes": 33,
+    "family": "tls_expiry",
+    "split": "seed"
+  },
+  {
+    "id": "INC-111",
+    "service": "reporting-service",
+    "severity": "sev3",
+    "resolved_at": "2026-08-04T10:02:00Z",
+    "alert": "reporting-service pods evicted repeatedly, node reports DiskPressure",
+    "symptoms": "Pods restart in a loop and get evicted with 'The node had condition: [DiskPressure]'. Application logs before eviction show 'No space left on device'.",
+    "actions": [
+      {
+        "action": "Scaled up reporting-service replicas",
+        "outcome": "failed",
+        "note": "New pods landed on the same full nodes and were evicted."
+      },
+      {
+        "action": "Purged old logs and fixed the log rotation config",
+        "outcome": "worked",
+        "note": "Evictions stopped once the node had free space."
+      }
+    ],
+    "root_cause": "Unrotated report-generation logs filled the node disk.",
+    "resolution": "Purged old logs and fixed the log rotation config.",
+    "ttr_minutes": 31,
+    "family": "disk_full",
+    "split": "seed"
+  },
+  {
+    "id": "INC-112",
+    "service": "analytics-worker",
+    "severity": "sev2",
+    "resolved_at": "2026-08-25T04:48:00Z",
+    "alert": "analytics-worker jobs crashing on output write, node ephemeral storage exhausted",
+    "symptoms": "Batch jobs abort mid-run with 'write failed: ENOSPC' and the node has ephemeral storage pressure. Log directory is 38 GB and growing.",
+    "actions": [
+      {
+        "action": "Scaled up analytics-worker replicas",
+        "outcome": "failed",
+        "note": "New pods landed on the same full nodes and were evicted."
+      },
+      {
+        "action": "Purged old logs and fixed the log rotation config",
+        "outcome": "worked",
+        "note": "Jobs completed on the next run."
+      }
+    ],
+    "root_cause": "Unrotated worker logs filled the volume on analytics nodes.",
+    "resolution": "Purged old logs and fixed the log rotation config.",
+    "ttr_minutes": 55,
+    "family": "disk_full",
+    "split": "seed"
+  },
+  {
+    "id": "INC-113",
+    "service": "payments-api",
+    "severity": "sev1",
+    "resolved_at": "2026-09-02T21:48:00Z",
+    "alert": "payments-api authorization requests stalling, queue depth 3.2k and rising",
+    "symptoms": "Card authorizations queue up while pod CPU stays low. Traces show requests idle waiting on the Postgres client, and logs show 'HikariPool-1 - Connection is not available, request timed out after 30000ms'.",
+    "actions": [
+      {
+        "action": "Restarted payments-api pods",
+        "outcome": "harmful",
+        "note": "Queue grew faster after the restart because the pool was exhausted again."
+      },
+      {
+        "action": "Rolled back config deploy #6240",
+        "outcome": "worked",
+        "note": "The deploy had reduced the connection pool size."
+      }
+    ],
+    "root_cause": "Config deploy #6240 reduced the payments-api DB connection pool size.",
+    "resolution": "Rolled back deploy #6240.",
+    "ttr_minutes": 63,
+    "family": "pool_exhaustion",
+    "split": "heldout"
+  },
+  {
+    "id": "INC-114",
+    "service": "cart-service",
+    "severity": "sev1",
+    "resolved_at": "2026-09-10T05:19:00Z",
+    "alert": "cart-service errors climbing, Postgres replicas pegged at 100% CPU, cache hit rate collapsed",
+    "symptoms": "Cart reads are slow and replicas are saturated. Redis sentinel logged a failover six minutes before the alert and cart-service logs show 'redis: master changed, connection reset'.",
+    "actions": [
+      {
+        "action": "Restarted the cache tier",
+        "outcome": "harmful",
+        "note": "Second cold start, the DB fell over again."
+      },
+      {
+        "action": "Enabled request coalescing and warmed hot cart keys gradually while rate-limiting DB traffic",
+        "outcome": "worked",
+        "note": "Replica CPU fell below 40% in twelve minutes."
+      }
+    ],
+    "root_cause": "A Redis failover emptied the cart cache and a thundering herd of misses overloaded the database.",
+    "resolution": "Enabled request coalescing and warmed hot keys gradually with DB rate limiting.",
+    "ttr_minutes": 49,
+    "family": "cache_stampede",
+    "split": "heldout"
+  },
+  {
+    "id": "INC-115",
+    "service": "shipping-service",
+    "severity": "sev2",
+    "resolved_at": "2026-09-18T07:26:00Z",
+    "alert": "shipping-service label generation at 0% success, peers rejecting connections",
+    "symptoms": "Peer services refuse connections from shipping-service during handshake. rate-service logs show 'remote error: tls: bad certificate' and cert-manager did not rotate the shipping-service certificate.",
+    "actions": [
+      {
+        "action": "Restarted shipping-service",
+        "outcome": "failed",
+        "note": "No effect, the same expired cert was reloaded."
+      },
+      {
+        "action": "Renewed the certificate and reloaded it on the affected services",
+        "outcome": "worked",
+        "note": "Labels started generating again."
+      }
+    ],
+    "root_cause": "The shipping-service mTLS certificate expired because cert-manager rotation had stalled.",
+    "resolution": "Renewed the certificate and reloaded it on the affected services.",
+    "ttr_minutes": 39,
+    "family": "tls_expiry",
+    "split": "heldout"
+  }
+]

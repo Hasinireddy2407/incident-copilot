@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident Copilot</title>
+<style>
+:root{--bg:#eef1f4;--panel:#fff;--ink:#17202a;--mute:#5b6773;--line:#d5dbe1;--good:#1d7a4d;--goodbg:#e6f4ec;--bad:#b3261e;--badbg:#fbeae9;--acc:#1f4e8c;--warn:#8a5a00;--warnbg:#fdf3dc}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Segoe UI",system-ui,sans-serif}
+header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#17202a;color:#fff}
+header h1{font-size:18px;margin:0;font-weight:600}
+main{display:grid;grid-template-columns:minmax(260px,1fr) minmax(320px,1.6fr) minmax(260px,1fr);gap:16px;padding:16px 24px;align-items:start}
+@media(max-width:1000px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px}
+h2{font-size:15px;margin:0 0 12px}
+label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
+input,textarea{width:100%;padding:8px;border:1px solid var(--line);border-radius:4px;font:inherit;background:#fff;color:var(--ink)}
+textarea{min-height:90px;resize:vertical}
+button{font:inherit;padding:7px 12px;border-radius:4px;border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer}
+button:hover{background:#f3f5f7}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+button.primary:hover{background:#183f72}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button:disabled{opacity:.6;cursor:wait}
+.toggle{display:flex;align-items:center;gap:8px;margin:12px 0}
+.toggle button[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
+.toggle button[aria-pressed="false"]{background:#5b6773;border-color:#5b6773;color:#fff}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.card{border-left:4px solid var(--good);background:var(--goodbg);padding:10px 12px;border-radius:0 4px 4px 0;margin:10px 0}
+.card.avoid{border-color:var(--bad);background:var(--badbg)}
+.card h3{font-size:14px;margin:0 0 4px}
+.card p{margin:0 0 6px}
+.src{font-size:13px;color:var(--acc);background:none;border:0;padding:0;text-decoration:underline;cursor:pointer}
+.fb{display:flex;gap:6px;margin-top:8px}
+.fb button{font-size:12px;padding:3px 8px}
+.fb button.sent{background:#17202a;color:#fff}
+.note{background:var(--warnbg);color:var(--warn);padding:8px 10px;border-radius:4px;margin:10px 0;font-size:14px}
+.err{background:var(--badbg);color:var(--bad);padding:8px 10px;border-radius:4px;margin:10px 0;font-size:14px}
+.empty{color:var(--mute);font-size:14px}
+.mem{border:1px solid var(--line);border-radius:4px;padding:8px;margin:8px 0;font-size:13px}
+.mem.hit{border-color:var(--acc);background:#eaf1fb}
+.badge{display:inline-block;font-size:12px;padding:1px 7px;border-radius:10px;background:#e4e8ec;margin-right:6px}
+.badge.observation{background:#dcd3f2}.badge.experience{background:#d3ecdf}.badge.world{background:#d6e4f7}
+.date{color:var(--mute);font-size:12px}
+pre{white-space:pre-wrap;font:13px/1.5 inherit;margin:8px 0 0}
+</style>
+</head>
+<body>
+<header><h1>Incident Copilot</h1><span style="font-size:13px;opacity:.8">Memory by Hindsight</span></header>
+<main>
+  <section aria-labelledby="h-alert">
+    <h2 id="h-alert">New alert</h2>
+    <label for="alert">Alert</label>
+    <textarea id="alert" placeholder="Paste the alert text"></textarea>
+    <label for="symptoms">Symptoms</label>
+    <textarea id="symptoms" placeholder="Logs, metrics, what you see"></textarea>
+    <label for="incId">Incident ID (for feedback)</label>
+    <input id="incId" value="LIVE-001">
+    <div class="toggle"><span>Memory</span>
+      <button id="memBtn" aria-pressed="true">ON</button></div>
+    <div class="row">
+      <button class="primary" id="planBtn">Get plan</button>
+      <button id="patBtn">Show patterns</button>
+    </div>
+    <div id="patterns"></div>
+  </section>
+
+  <section aria-labelledby="h-plan">
+    <h2 id="h-plan">Recommended plan</h2>
+    <div id="plan" aria-live="polite"><p class="empty">Enter an alert and select Get plan.</p></div>
+  </section>
+
+  <section aria-labelledby="h-mem">
+    <h2 id="h-mem">Memories used</h2>
+    <div id="mems"><p class="empty">Recalled memories appear here after you get a plan.</p></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let useMemory = true, actionCount = 0;
+
+$("memBtn").onclick = () => {
+  useMemory = !useMemory;
+  $("memBtn").textContent = useMemory ? "ON" : "OFF";
+  $("memBtn").setAttribute("aria-pressed", useMemory);
+};
+
+async function post(url, body) {
+  const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  if (!r.ok) throw new Error(`Server returned ${r.status}`);
+  return r.json();
+}
+
+$("planBtn").onclick = async () => {
+  const alert = $("alert").value.trim();
+  if (!alert) { $("plan").innerHTML = '<div class="err">Enter an alert first.</div>'; return; }
+  $("planBtn").disabled = true; $("plan").innerHTML = '<p class="empty">Working...</p>';
+  try {
+    const p = await post("/plan", {alert, symptoms: $("symptoms").value, use_memory: useMemory});
+    renderPlan(p); renderMems(p._memories || []);
+  } catch (e) {
+    $("plan").innerHTML = `<div class="err">Could not get a plan: ${esc(e.message)}. Check that the server, Hindsight and Groq are running.</div>`;
+  } finally { $("planBtn").disabled = false; }
+};
+
+function srcLink(s) { return s ? `<button class="src" data-src="${esc(s)}">${esc(s)}</button>` : ""; }
+
+function renderPlan(p) {
+  let h = "";
+  if (p.summary) h += `<p>${esc(p.summary)}</p>`;
+  if (p.staleness_note) h += `<div class="note">${esc(p.staleness_note)}</div>`;
+  (p.steps || []).forEach((s, i) => {
+    h += `<div class="card"><h3>${i + 1}. ${esc(s.action)}</h3><p>${esc(s.why)}</p>${srcLink(s.source)}
+      <div class="fb" data-action="${esc(s.action)}">
+        <button data-o="worked">Worked</button><button data-o="failed">Failed</button><button data-o="harmful">Harmful</button>
+      </div></div>`;
+  });
+  if ((p.avoid || []).length) h += "<h2>Avoid</h2>";
+  (p.avoid || []).forEach(a => {
+    h += `<div class="card avoid"><h3>${esc(a.action)}</h3><p>${esc(a.reason)}</p>${srcLink(a.source)}</div>`;
+  });
+  if (!(p.steps || []).length && !(p.avoid || []).length) h += '<p class="empty">No plan returned.</p>';
+  $("plan").innerHTML = h;
+}
+
+$("plan").addEventListener("click", async e => {
+  const src = e.target.closest(".src");
+  if (src) {
+    let first = null;
+    document.querySelectorAll(".mem").forEach(m => {
+      const hit = m.textContent.includes(src.dataset.src);
+      m.classList.toggle("hit", hit);
+      if (hit && !first) first = m;
+    });
+    if (first) first.scrollIntoView({behavior: "smooth", block: "nearest"});
+    return;
+  }
+  const b = e.target.closest(".fb button");
+  if (!b) return;
+  const box = b.parentElement;
+  try {
+    await post("/action", {incident_id: $("incId").value.trim() || "LIVE-001", n: ++actionCount,
+      action: box.dataset.action, outcome: b.dataset.o, note: ""});
+    box.querySelectorAll("button").forEach(x => x.classList.remove("sent"));
+    b.classList.add("sent"); b.textContent = b.dataset.o[0].toUpperCase() + b.dataset.o.slice(1) + " (saved)";
+  } catch (err) {
+    box.insertAdjacentHTML("beforeend", `<span class="err">Not saved: ${esc(err.message)}</span>`);
+  }
+});
+
+function renderMems(ms) {
+  if (!ms.length) { $("mems").innerHTML = '<p class="empty">No memories recalled. The plan uses general advice only.</p>'; return; }
+  $("mems").innerHTML = ms.map(m => `<div class="mem"><span class="badge ${esc(m.type)}">${esc(m.type)}</span>
+    <span class="date">${esc(m.date ? String(m.date).slice(0, 10) : "undated")}</span><div>${esc(m.text)}</div></div>`).join("");
+}
+
+$("patBtn").onclick = async () => {
+  $("patterns").innerHTML = '<p class="empty">Reflecting...</p>';
+  try {
+    const res = await fetch("/patterns"); const r = await res.json();
+    if (!res.ok) throw new Error(r.detail || res.status);
+    $("patterns").innerHTML = `<h2 style="margin-top:16px">Learned patterns</h2><pre>${esc(r.text)}</pre>`;
+  } catch (e) {
+    $("patterns").innerHTML = `<div class="err">Could not load patterns: ${esc(e.message)}</div>`;
+  }
+};
+</script>
+</body>
+</html>
